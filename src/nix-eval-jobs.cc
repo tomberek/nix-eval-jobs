@@ -150,7 +150,7 @@ static void worker(
         lockedFlake = std::make_shared<flake::LockedFlake>(lockFlake(state, *flakeRef,
             LockFlags {
                 .updateLockFile = false,
-                .useRegistries = false,
+                .useRegistries = true,
                 .allowMutable = false,
             }));
 

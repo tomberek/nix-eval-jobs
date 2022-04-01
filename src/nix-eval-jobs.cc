@@ -194,6 +194,7 @@ static void worker(
         } else {
             reply["attrPath"] = attrPath;
         }
+        reply["active"] = false;
         try {
             auto vTmp = findAlongAttrPath(state, attrPath, autoArgs, *vRoot).first;
 

@@ -297,6 +297,7 @@ static void worker(
             // Transmits the error we got from the previous evaluation
             // in the JSON output.
             reply["active"] = false;
+            reply["attrPath"] = attrPath;
             reply["error"] = filterANSIEscapes(msg, true);
             // Don't forget to print it into the STDERR log, this is
             // what's shown in the Hydra UI.

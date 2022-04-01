@@ -386,6 +386,7 @@ int main(int argc, char * * argv)
                                     nlohmann::json err;
                                     auto msg = e.msg();
                                     err["active"] = false;
+                                    err["attrPath"] = "";
                                     err["error"] = filterANSIEscapes(msg, true);
                                     printError(msg);
                                     writeLine(to->get(), err.dump());

@@ -266,8 +266,9 @@ static void worker(
                 size_t n = std::count(attrPath.begin(), attrPath.end(), '.')+(attrPath == "" ? 0: 1);
                 if (n < myArgs.depth){
                     auto attrs = nlohmann::json::array();
-                    Bindings::iterator j = v->attrs->find(state.sRecurseForDerivations);
-                    if ( n==0 || (j != v->attrs->end() && state.forceBool(*j->value, *j->pos))){
+                    // Check if derivation
+                    Bindings::iterator j = v->attrs->find(state.sOutPath);
+                    if ( n==0 || (j == v->attrs->end())){
                         StringSet ss;
                         for (auto & i : v->attrs->lexicographicOrder()) {
                             std::string name(i->name);

@@ -46,6 +46,7 @@ struct MyArgs : MixEvalArgs, MixCommonArgs {
     bool showTrace = false;
     size_t nrWorkers = 1;
     size_t maxMemorySize = 4096;
+    size_t depth = 0;
     pureEval evalMode = evalAuto;
 
     MyArgs() : MixCommonArgs("nix-eval-jobs") {
@@ -95,6 +96,13 @@ struct MyArgs : MixEvalArgs, MixCommonArgs {
         addFlag({.longName = "meta",
                  .description = "include derivation meta field in output",
                  .handler = {&meta, true}});
+
+        addFlag({
+            .longName = "depth",
+            .description = "set recursiion depth mode",
+            .labels = {"depth"},
+            .handler = {
+                [=](std::string s) { depth = std::stoi(s); }}});
 
         addFlag({.longName = "show-trace",
                  .description =
@@ -236,6 +244,10 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                    AutoCloseFD &from) {
     auto vRoot = topLevelValue(state, autoArgs);
 
+    auto [flakeRef, fragment] =
+        parseFlakeRefWithFragment(myArgs.releaseExpr, absPath("."));
+    auto tokens = parseAttrPath(state,fragment);
+
     while (true) {
         /* Wait for the collector to send us a job name. */
         writeLine(to.get(), "next");
@@ -284,7 +296,7 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
             else if (v->type() == nAttrs) {
                 auto attrs = nlohmann::json::array();
                 bool recurse =
-                    path.size() == 0; // Dont require `recurseForDerivations =
+                    path.size() <= myArgs.depth; // Dont require `recurseForDerivations =
                                       // true;` for top-level attrset
 
                 for (auto &i : v->attrs->lexicographicOrder(state.symbols)) {
@@ -325,6 +337,9 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
             printError(e.msg());
         }
 
+        for (auto a: tokens) {
+            reply["attrPathFull"].push_back(state.symbols[a]);
+        }
         writeLine(to.get(), reply.dump());
 
         /* If our RSS exceeds the maximum, exit. The collector will
@@ -446,7 +461,9 @@ std::function<void()> collector(Sync<State> &state_,
                     }
                 } else {
                     auto state(state_.lock());
-                    std::cout << respString << "\n" << std::flush;
+                    response["attrPath"]=response["attrPathFull"];
+                    response.erase("attrPathFull");
+                    std::cout << response.dump() << "\n" << std::flush;
                 }
 
                 proc_ = std::move(proc);

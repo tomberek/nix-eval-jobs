@@ -240,6 +240,31 @@ std::string attrPathJoin(json input) {
                            });
 }
 
+static Strings parseAttrPath2(std::string_view s)
+{
+    Strings res;
+    std::string cur;
+    auto i = s.begin();
+    while (i != s.end()) {
+        if (*i == '.') {
+            res.push_back(cur);
+            cur.clear();
+        } else if (*i == '"') {
+            ++i;
+            while (1) {
+                if (i == s.end())
+                    throw ParseError("missing closing quote in selection path '%1%'", s);
+                if (*i == '"') break;
+                cur.push_back(*i++);
+            }
+        } else
+            cur.push_back(*i);
+        ++i;
+    }
+    if (!cur.empty()) res.push_back(cur);
+    return res;
+}
+
 static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                    AutoCloseFD &from) {
     auto vRoot = topLevelValue(state, autoArgs);
@@ -461,7 +486,11 @@ std::function<void()> collector(Sync<State> &state_,
                     }
                 } else {
                     auto state(state_.lock());
-                    response["attrPath"]=response["attrPathFull"];
+                    response["attrPath"]=json(response["attrPathFull"]);
+                    auto tokens = parseAttrPath2(response["attr"].get<std::string>());
+                    for (auto a: tokens) {
+                        response["attrPath"].emplace_back(a);
+                    }
                     response.erase("attrPathFull");
                     std::cout << response.dump() << "\n" << std::flush;
                 }

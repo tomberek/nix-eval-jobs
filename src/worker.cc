@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 // NOLINTBEGIN(modernize-deprecated-headers)
 // misc-include-cleaner wants this header rather than the C++ version
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include <nix/flake/flakeref.hh>
 #include <nix/flake/flake.hh>
 #include <nix/expr/get-drvs.hh>
+#include <nix/expr/eval-cache.hh>
 #include <nix/util/logging.hh>
 #include <nix/store/outputs-spec.hh>
 #include <nix/util/ref.hh>
@@ -50,6 +52,7 @@
 #include "response.hh"
 #include "buffered-io.hh"
 #include "eval-args.hh"
+#include "eval-cache-worker.hh"
 #include "store.hh"
 
 namespace nix {
@@ -318,7 +321,9 @@ auto shouldRestart(const MyArgs &args) -> bool {
 
 auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
                        nix::AutoCloseFD &toParent, nix::Bindings &autoArgs,
-                       nix::Value *vRoot, MyArgs &args) -> bool {
+                       nix::Value *vRoot, MyArgs &args,
+                       std::optional<nix::ref<nix::eval_cache::EvalCache>> &evalCache,
+                       const std::vector<std::string> &fragmentPath) -> bool {
     /* Wait for the collector to send us a job name. */
     if (tryWriteLine(toParent.get(), "next") < 0) {
         return false; // main process died
@@ -326,6 +331,18 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
 
     auto line = fromReader.readLine();
     if (line == "exit") {
+        // Flush eval cache before exit to persist cached data
+        if (evalCache.has_value()) {
+            // Copy cache and reset to release all cursor references
+            auto cacheToFlush = evalCache;
+            evalCache.reset();
+
+            try {
+                (*cacheToFlush)->flush();
+            } catch (const std::exception &e) {
+                std::cerr << "warning: eval cache flush failed: " << e.what() << std::endl;
+            }
+        }
         return false;
     }
 
@@ -341,6 +358,38 @@ auto processJobRequest(nix::EvalState &state, LineReader &fromReader,
     /* Evaluate it and send info back to the collector. */
     Response::Payload payload = [&]() -> Response::Payload {
         try {
+            // If cache is available, pre-populate it by traversing the path
+            if (evalCache.has_value()) {
+                try {
+                    auto cursor = (*evalCache)->getRoot();
+
+                    // Build full path: fragmentPath + relative path
+                    // Example: fragmentPath=["packages","x86_64-linux"], path=["hello"]
+                    // → fullPath=["packages","x86_64-linux","hello"]
+                    auto relativePath = path.get<std::vector<std::string>>();
+                    std::vector<std::string> fullPath = fragmentPath;
+                    fullPath.insert(fullPath.end(), relativePath.begin(), relativePath.end());
+
+                    // Navigate through the full path
+                    for (const auto &attrName : fullPath) {
+                        cursor = cursor->getAttr(attrName);
+                    }
+
+                    // Force value evaluation through cache to populate it
+                    cursor->forceValue();
+
+                    // Also cache common derivation attributes
+                    if (cursor->isDerivation()) {
+                        try { cursor->getAttr("drvPath")->getString(); } catch (...) {}
+                        try { cursor->getAttr("name")->getString(); } catch (...) {}
+                        try { cursor->getAttr("system")->getString(); } catch (...) {}
+                        try { cursor->getAttr("outputs")->getListOfStrings(); } catch (...) {}
+                    }
+                } catch (...) {
+                    // If cache access fails, fall through to direct evaluation
+                }
+            }
+
             auto *vTmp =
                 nix::findAlongAttrPath(state, attrPathS, autoArgs, *vRoot)
                     .first;
@@ -406,12 +455,34 @@ void worker(
         args.lookupPath, evalStore, nix::fetchSettings, nix::evalSettings);
     nix::Bindings &autoArgs = *args.getAutoArgs(*state);
 
+    // Create eval cache if requested (before initializing root value)
+    std::optional<nix::ref<nix::eval_cache::EvalCache>> evalCache;
+    std::vector<std::string> fragmentPath;
+    if (args.useEvalCache && args.flake) {
+        auto [flakeRef, fragment, outputSpec] = nix::parseFlakeRefWithFragmentAndExtendedOutputsSpec(
+            nix::fetchSettings, args.releaseExpr, nix::absPath(std::filesystem::path(".")));
+
+        // Parse fragment into path components for cache navigation
+        // Example: "packages.x86_64-linux" → ["packages", "x86_64-linux"]
+        if (!fragment.empty()) {
+            std::string component;
+            std::istringstream fragmentStream(fragment);
+            while (std::getline(fragmentStream, component, '.')) {
+                fragmentPath.push_back(component);
+            }
+        }
+
+        auto lockedFlake = nix::flake::lockFlake(nix::flakeSettings, *state, flakeRef, args.lockFlags);
+        evalCache = nix::eval_cache::makeWorkerEvalCache(state, nix::make_ref<const nix::flake::LockedFlake>(lockedFlake));
+        std::cerr << "info: worker " << getpid() << " using eval cache" << std::endl;
+    }
+
     nix::Value *vRoot = initializeRootValue(state, autoArgs, args);
 
     LineReader fromReader(fromParent.release());
 
     while (processJobRequest(*state, fromReader, toParent, autoArgs, vRoot,
-                             args)) {
+                             args, evalCache, fragmentPath)) {
         // Continue processing jobs until we need to exit
     }
 

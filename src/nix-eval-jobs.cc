@@ -6,6 +6,7 @@
 // NOLINTEND(modernize-deprecated-headers)
 #include <cassert>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdlib>
@@ -46,6 +47,7 @@
 #include <string>
 #include <string_view>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -451,6 +453,19 @@ void collector(nix::Sync<State> &state_, std::condition_variable &wakeup) {
             auto maybeAttrPath =
                 getNextJob(state_, wakeup, proc_.value().get());
             if (!maybeAttrPath.has_value()) {
+                // Wait for worker to exit gracefully after flushing eval cache
+                proc_.value()->to.close();
+                for (int i = 0; i < 50; i++) {
+                    int status = 0;
+                    pid_t result = waitpid(proc_.value()->pid, &status, WNOHANG);
+                    if (result == proc_.value()->pid) {
+                        proc_.value()->pid.release();
+                        break;
+                    } else if (result == -1) {
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
                 return;
             }
             const auto &attrPath = maybeAttrPath.value();

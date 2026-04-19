@@ -204,6 +204,18 @@ MyArgs::MyArgs() : MixCommonArgs("nix-eval-jobs") {
     });
 
     addFlag({
+        .longName = "eval-cache",
+        .aliases = {},
+        .shortName = 0,
+        .description = "enable Nix evaluation cache for flakes",
+        .category = "",
+        .labels = {},
+        .handler = {[this]() { useEvalCache = true; }},
+        .completer = nullptr,
+        .experimentalFeature = std::nullopt,
+    });
+
+    addFlag({
         .longName = "expr",
         .aliases = {},
         .shortName = 'E',
